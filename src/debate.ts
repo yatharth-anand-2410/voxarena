@@ -12,7 +12,7 @@ export interface UI {
 
 const systemPrompt = (me: Debater, other: Debater, label: "A" | "B", topic: string) =>
   `You are Debater ${label} (${me.name}). Stance: ${me.stance}. ${MODELS.find((m) => m.id === me.modelId)?.style ?? ""} ` +
-  `Topic: ${topic}. RULES: Never agree with your opponent (${other.name}). Directly challenge their previous point in 2-3 natural spoken sentences. ` +
+  `Topic: ${topic}. RULES: Never agree with your opponent (${other.name}). Directly challenge their previous point in 1-2 short spoken sentences (under 40 words total). ` +
   `Never concede. Output plain spoken text only, no markdown, asterisks or lists.`;
 
 export class Debate {
@@ -46,13 +46,24 @@ export class Debate {
     }));
   }
 
-  private say(text: string, voice: string, g: number): Promise<void> {
+  // Resolves with the ctx time the sentence starts playing, or null if dropped.
+  private say(text: string, voice: string, g: number): Promise<number | null> {
     const id = ++this.sayId;
     return new Promise((res) => {
-      this.pending.set(id, (pcm) => { if (pcm && g === this.gen) this.player.enqueue(pcm); res(); });
+      this.pending.set(id, (pcm) => res(pcm && g === this.gen ? this.player.enqueue(pcm) : null));
       this.tts.postMessage({ type: "say", id, text, voice });
     });
   }
+
+  private waits = new Set<() => void>();
+  private wait(ms: number) { // resolves early on stop()
+    return new Promise<void>((res) => {
+      const done = () => { clearTimeout(t); this.waits.delete(done); res(); };
+      const t = setTimeout(done, Math.max(0, ms));
+      this.waits.add(done);
+    });
+  }
+  private until(ctxTime: number) { return this.wait((ctxTime - this.player.ctx.currentTime) * 1000); }
 
   private async useModel(id: string) {
     if (!this.engine) {
@@ -73,36 +84,55 @@ export class Debate {
       await this.player.ctx.resume();
       this.ui.status("Loading voice model…");
       await this.loadTts();
-      let who: "A" | "B" = "B";
-      while (alive()) {
+      // One turn: generate, synthesize and queue audio. Audio is scheduled behind whatever is still playing,
+      // and transcript text is revealed when its sentence actually starts.
+      const MAX_SENTENCES = 2;
+      const turn = async (who: "A" | "B") => {
         const me = who === "A" ? a : b, other = who === "A" ? b : a;
         await this.useModel(me.modelId);
-        if (!alive()) break;
-        this.ui.speaker(who);
-        this.ui.status(`${me.name} speaking`);
-        log.push({ who, text: "" });
-        const entry = log[log.length - 1];
+        const entry = { who, text: "" };
         const chunker = new Chunker();
         const spoken: Promise<void>[] = [];
-        const speak = (s: string) => { entry.text += (entry.text ? " " : "") + s; this.ui.transcript([...log]); spoken.push(this.say(s, me.voice, g)); };
+        let full = "", startAt = 0, n = 0;
+        const speak = (s: string) => {
+          n++;
+          full += (full ? " " : "") + s;
+          spoken.push(this.say(s, me.voice, g).then((at) => {
+            if (at === null) return;
+            startAt ||= at;
+            return this.until(at).then(() => {
+              if (!alive()) return;
+              if (!entry.text) { log.push(entry); this.ui.speaker(who); this.ui.status(`${me.name} speaking`); }
+              entry.text += (entry.text ? " " : "") + s;
+              this.ui.transcript([...log]);
+            });
+          }));
+        };
         const stream = await this.engine!.chat.completions.create({
           messages: windowed(systemPrompt(me, other, who, topic), hist[who]),
-          stream: true, max_tokens: 160, temperature: 0.8,
+          stream: true, max_tokens: 100, temperature: 0.8,
         });
         for await (const c of stream) {
           if (!alive()) break;
           chunker.push(c.choices[0]?.delta?.content ?? "").forEach(speak);
+          if (n >= MAX_SENTENCES) { this.engine!.interruptGenerate(); break; } // small models ignore length rules
         }
-        const tail = chunker.flush();
+        const tail = n < MAX_SENTENCES ? chunker.flush() : null;
         if (tail && alive()) speak(tail);
         await Promise.all(spoken);
+        return { full: full || "...", startAt }; // empty reply would break role alternation
+      };
+
+      let who: "A" | "B" = "B";
+      while (alive()) {
+        const me = who === "A" ? a : b, next: "A" | "B" = who === "A" ? "B" : "A";
+        const t = await turn(who);
         if (!alive()) break;
-        await this.player.drained();
-        if (!alive()) break;
-        const reply = entry.text || "..."; // empty reply would break role alternation
-        hist[who].push({ role: "assistant", content: reply });
-        hist[who === "A" ? "B" : "A"].push({ role: "user", content: `${me.name} said: "${reply}"\nRebut this with a NEW argument in your own words. Do not repeat it.` });
-        who = who === "A" ? "B" : "A";
+        hist[who].push({ role: "assistant", content: t.full });
+        hist[next].push({ role: "user", content: `${me.name} said: "${t.full}"\nRebut this with a NEW argument in your own words. Do not repeat it.` });
+        // Prefetch: the next turn is generated while this one plays, but never more than one turn ahead.
+        await this.until(t.startAt);
+        who = next;
       }
     } catch (e) {
       if (alive()) { this.ui.status(`Error: ${e instanceof Error ? e.message : e}`); this.ui.speaker(null); return; }
@@ -118,6 +148,7 @@ export class Debate {
     this.player.stop();
     this.pending.forEach((r) => r(null));
     this.pending.clear();
+    [...this.waits].forEach((f) => f());
     this.ui.speaker(null);
     this.ui.status("Stopped");
   }

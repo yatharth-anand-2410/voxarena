@@ -9,17 +9,18 @@ export class Player {
 
   constructor() { this.an.fftSize = 256; this.an.connect(this.ctx.destination); }
 
-  enqueue(pcm: Float32Array) {
+  enqueue(pcm: Float32Array): number { // returns the ctx time this clip starts
     const buf = this.ctx.createBuffer(1, pcm.length, 24000);
     buf.copyToChannel(pcm as Float32Array<ArrayBuffer>, 0);
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.an);
-    this.next = Math.max(this.next, this.ctx.currentTime + 0.02);
-    src.start(this.next);
-    this.next += buf.duration;
+    const at = Math.max(this.next, this.ctx.currentTime + 0.02);
+    src.start(at);
+    this.next = at + buf.duration;
     this.active.add(src);
     src.onended = () => { this.active.delete(src); if (!this.active.size) this.release(); };
+    return at;
   }
 
   drained(): Promise<void> {
