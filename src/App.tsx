@@ -3,6 +3,7 @@ import { Debate, type Debater } from "./debate";
 import { MODELS, VOICES } from "./models";
 
 const hasGpu = "gpu" in navigator;
+const variety = (d: Debater) => MODELS.find((m) => m.id === d.modelId)?.variety;
 const init = (name: string, voice: string, modelId: string): Debater => ({ name, stance: "", modelId, voice });
 
 function Card({ label, d, set, locked }: { label: string; d: Debater; set: (d: Debater) => void; locked: boolean }) {
@@ -13,7 +14,7 @@ function Card({ label, d, set, locked }: { label: string; d: Debater; set: (d: D
       <input className={f} disabled={locked} placeholder="Name" value={d.name} onChange={(e) => set({ ...d, name: e.target.value })} />
       <textarea className={f} disabled={locked} rows={2} placeholder="Stance (e.g. pineapple belongs on pizza)" value={d.stance} onChange={(e) => set({ ...d, stance: e.target.value })} />
       <select className={f} disabled={locked} value={d.modelId} onChange={(e) => set({ ...d, modelId: e.target.value })}>
-        {MODELS.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        {MODELS.map((m) => <option key={m.id} value={m.id}>{m.name} [{m.variety}]</option>)}
       </select>
       <select className={f} disabled={locked} value={d.voice} onChange={(e) => set({ ...d, voice: e.target.value })}>
         {VOICES.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
@@ -61,7 +62,7 @@ export default function App() {
       <div className="mt-4 flex flex-col gap-2">
         {log.map((m, i) => (
           <p key={i} className={`rounded p-3 text-sm ${m.who === speaker && i === log.length - 1 ? "bg-neutral-800 font-medium" : "bg-neutral-900"}`}>
-            <b>{m.who === "A" ? a.name : b.name}:</b> {m.text}
+            <b>{m.who === "A" ? a.name : b.name}</b> <span className="text-xs text-neutral-500">[{variety(m.who === "A" ? a : b)}]</span>: {m.text}
           </p>
         ))}
       </div>

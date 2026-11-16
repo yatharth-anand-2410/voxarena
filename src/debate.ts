@@ -1,7 +1,7 @@
 import { WebWorkerMLCEngine } from "@mlc-ai/web-llm";
 import { Chunker, windowed, type Msg } from "./chunker";
 import { Player } from "./audio";
-import { MODELS } from "./models";
+import { MODELS, appConfig } from "./models";
 
 export interface Debater { name: string; stance: string; modelId: string; voice: string }
 export interface UI {
@@ -68,7 +68,7 @@ export class Debate {
   private async useModel(id: string) {
     if (!this.engine) {
       this.engine = new WebWorkerMLCEngine(new Worker(new URL("./slm.worker.ts", import.meta.url), { type: "module" }), {
-        initProgressCallback: (r) => this.ui.status(r.text),
+        appConfig, initProgressCallback: (r) => this.ui.status(r.text),
       });
     }
     if (this.loadedModel !== id) { await this.engine.reload(id); this.loadedModel = id; }
